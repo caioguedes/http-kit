@@ -2,9 +2,9 @@ package org.httpkit;
 
 public class ProtocolException extends HTTPException {
 
-    private static final long serialVersionUID = 1L;
+  private static final long serialVersionUID = 1L;
 
-    public ProtocolException(String msg) {
-        super(msg);
-    }
+  public ProtocolException(String msg) {
+    super(msg);
+  }
 }

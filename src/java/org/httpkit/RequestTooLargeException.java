@@ -2,9 +2,9 @@ package org.httpkit;
 
 public class RequestTooLargeException extends HTTPException {
 
-    private static final long serialVersionUID = 1L;
+  private static final long serialVersionUID = 1L;
 
-    public RequestTooLargeException(String msg) {
-        super(msg);
-    }
+  public RequestTooLargeException(String msg) {
+    super(msg);
+  }
 }

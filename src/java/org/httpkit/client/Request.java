@@ -1,108 +1,113 @@
 package org.httpkit.client;
 
-import org.httpkit.PriorityQueue;
-
-import javax.net.ssl.SSLException;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
+import javax.net.ssl.SSLException;
+import org.httpkit.PriorityQueue;
 
 public class Request implements Comparable<Request> {
 
-    final SocketAddress addr;
-    final String host;
-    final Decoder decoder;
-    final ByteBuffer[] request; // HTTP request
-    final RequestConfig cfg;
-    private final PriorityQueue<Request> clients; // update timeout
+  final SocketAddress addr;
+  final String host;
+  final Decoder decoder;
+  final ByteBuffer[] request; // HTTP request
+  final RequestConfig cfg;
+  private final PriorityQueue<Request> clients; // update timeout
 
-    // is modify from the loop thread. ensure only called once
-    private boolean isDone = false;
+  // is modify from the loop thread. ensure only called once
+  private boolean isDone = false;
 
-    boolean isReuseConn = false; // a reused socket sent the request
-    private boolean isConnected = false;
-    SelectionKey key; // for timeout, close connection
+  boolean isReuseConn = false; // a reused socket sent the request
+  private boolean isConnected = false;
+  SelectionKey key; // for timeout, close connection
 
-    private long timeoutTs; // future time this request timeout, ms
+  private long timeoutTs; // future time this request timeout, ms
 
-    public Request(SocketAddress addr, String host, ByteBuffer[] request, IRespListener handler,
-                   PriorityQueue<Request> clients, RequestConfig config) {
-        this.cfg = config;
-        this.decoder = new Decoder(handler, config.method);
-        this.request = request;
-        this.clients = clients;
-        this.addr = addr;
-        this.host = host;
-        this.timeoutTs = config.connTimeout + System.currentTimeMillis();
+  public Request(
+      SocketAddress addr,
+      String host,
+      ByteBuffer[] request,
+      IRespListener handler,
+      PriorityQueue<Request> clients,
+      RequestConfig config) {
+    this.cfg = config;
+    this.decoder = new Decoder(handler, config.method);
+    this.request = request;
+    this.clients = clients;
+    this.addr = addr;
+    this.host = host;
+    this.timeoutTs = config.connTimeout + System.currentTimeMillis();
+  }
+
+  public boolean isConnected() {
+    return isConnected;
+  }
+
+  public void setConnected(boolean isConnected) {
+    if (this.isConnected != isConnected) {
+      this.isConnected = isConnected;
+
+      // Switch timeout type
+      long timeout = isConnected ? cfg.idleTimeout : cfg.connTimeout;
+      clients.remove(this);
+      timeoutTs = timeout + System.currentTimeMillis();
+      clients.offer(this);
     }
+  }
 
-    public boolean isConnected() {
-        return isConnected;
+  public void onProgress(long now) {
+    long timeout = isConnected ? cfg.idleTimeout : cfg.connTimeout;
+    if (timeout + now - timeoutTs > 800) {
+      // Extend timeout on activity
+      clients.remove(this);
+      timeoutTs = timeout + now;
+      clients.offer(this);
     }
+  }
 
-    public void setConnected(boolean isConnected) {
-        if (this.isConnected != isConnected) {
-          this.isConnected = isConnected;
+  public void finish() {
+    clients.remove(this);
+    if (isDone) return;
+    isDone = true;
+    decoder.listener.onCompleted();
+  }
 
-          // Switch timeout type
-          long timeout = isConnected ? cfg.idleTimeout : cfg.connTimeout;
-          clients.remove(this);
-          timeoutTs = timeout + System.currentTimeMillis();
-          clients.offer(this);
-        }
+  public boolean isTimeout(long now) {
+    return timeoutTs < now;
+  }
+
+  public long toTimeout(long now) {
+    return Math.max(timeoutTs - now, 0L);
+  }
+
+  public void finish(Throwable t) {
+    clients.remove(this);
+    if (isDone) return;
+    isDone = true;
+    decoder.listener.onThrowable(t);
+  }
+
+  public int compareTo(Request o) {
+    return (int) (timeoutTs - o.timeoutTs);
+  }
+
+  public void recycle(Request old) throws SSLException {
+    this.key = old.key;
+    isReuseConn = true;
+    clients.offer(this);
+    setConnected(
+        true); // since we're re-using a keepalive conn, set the timeout as if we're already
+               // connected
+  }
+
+  public void unrecycle() {
+    for (ByteBuffer b : request) {
+      b.position(0); // reset for retry
     }
-
-    public void onProgress(long now) {
-        long timeout = isConnected ? cfg.idleTimeout : cfg.connTimeout;
-        if (timeout + now - timeoutTs > 800) {
-            // Extend timeout on activity
-            clients.remove(this);
-            timeoutTs = timeout + now;
-            clients.offer(this);
-        }
-    }
-
-    public void finish() {
-        clients.remove(this);
-        if (isDone)
-            return;
-        isDone = true;
-        decoder.listener.onCompleted();
-    }
-
-    public boolean isTimeout(long now) {
-        return timeoutTs < now;
-    }
-
-    public long toTimeout(long now) {
-        return Math.max(timeoutTs - now, 0L);
-    }
-
-    public void finish(Throwable t) {
-        clients.remove(this);
-        if (isDone)
-            return;
-        isDone = true;
-        decoder.listener.onThrowable(t);
-    }
-
-    public int compareTo(Request o) {
-        return (int) (timeoutTs - o.timeoutTs);
-    }
-
-    public void recycle(Request old) throws SSLException {
-        this.key = old.key;
-        isReuseConn = true;
-        clients.offer(this);
-        setConnected(true); // since we're re-using a keepalive conn, set the timeout as if we're already connected
-    }
-
-    public void unrecycle() {
-        for (ByteBuffer b : request) {
-            b.position(0); // reset for retry
-        }
-        isReuseConn = false;
-        setConnected(false);
-        clients.remove(this); // setConnected adds to timeouts queue, but we shouldn't time this out anymore
-    }
+    isReuseConn = false;
+    setConnected(false);
+    clients.remove(
+        this); // setConnected adds to timeouts queue, but we shouldn't time this out anymore
+  }
 }
